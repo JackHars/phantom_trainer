@@ -103,23 +103,21 @@ class SuperComboNet(nn.Module):
         x = self.encoder(image)
         x = torch.mean(x, dim=(2, 3))  # Global average pooling
         
-        # Process temporal features
+        # Process temporal features - handle as input for ONNX compatibility
         if recurrent_state is not None:
             current_state = recurrent_state
-        elif self.temporal_feature.size(0) != batch_size:
-            # Initialize new state for this batch size
-            current_state = torch.zeros(batch_size, 1, self.gru.hidden_size, 
-                                       device=next(self.parameters()).device)
         else:
-            # Use existing state but detach it from computation graph
-            current_state = self.temporal_feature.detach()
+            # Always create a new zero state if none provided
+            # This is more ONNX-friendly than checking tensor size
+            current_state = torch.zeros(batch_size, 1, self.gru.hidden_size, 
+                                      device=next(self.parameters()).device)
         
         # Process recurrent component
         x_gru = x.unsqueeze(1)  # Add sequence dimension
         gru_out, h_n = self.gru(x_gru, current_state.transpose(0, 1).contiguous())
         
         # Store new state for next iteration
-        self.temporal_feature = h_n.transpose(0, 1)
+        new_state = h_n.transpose(0, 1)
         
         # Feature fusion
         combined = torch.cat([x, gru_out.squeeze(1)], dim=1)
@@ -129,7 +127,7 @@ class SuperComboNet(nn.Module):
         output = self.output_head(fused)
         
         # Return the primary output and current state
-        return output, self.temporal_feature
+        return output, new_state
 
 # RGB to YUV conversion
 def rgb_to_yuv(rgb_image):

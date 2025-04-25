@@ -85,24 +85,30 @@ def train_model(model, train_loader, val_loader, device, epochs=100, lr=1e-4):
             
             # Export to ONNX format in a way compatible with Phantom
             dummy_image = torch.randn(1, 3, MODEL_HEIGHT, MODEL_WIDTH, device=device)
+            dummy_desire = torch.zeros(1, DESIRE_LEN, device=device)
+            dummy_traffic = torch.zeros(1, TRAFFIC_CONVENTION_LEN, device=device)
+            dummy_state = torch.zeros(1, 1, TEMPORAL_SIZE, device=device)
             
             # Set model to inference mode
             model.eval()
             
-            # Export the model to ONNX
+            # Export the model to ONNX with explicit inputs for all parameters
             torch.onnx.export(
                 model,
-                dummy_image,  # Just pass the image as input
+                (dummy_image, dummy_desire, dummy_traffic, dummy_state),  # All inputs
                 "supercombo.onnx",
                 export_params=True,
                 opset_version=11,
                 do_constant_folding=True,
-                input_names=['input'],  # Single input name
-                output_names=['output', 'recurrent'],  # Main output and recurrent state
+                input_names=['image', 'desire', 'traffic_convention', 'recurrent_state'],
+                output_names=['output', 'new_recurrent_state'],
                 dynamic_axes={
-                    'input': {0: 'batch_size'},
+                    'image': {0: 'batch_size'},
+                    'desire': {0: 'batch_size'},
+                    'traffic_convention': {0: 'batch_size'},
+                    'recurrent_state': {0: 'batch_size'},
                     'output': {0: 'batch_size'},
-                    'recurrent': {0: 'batch_size'}
+                    'new_recurrent_state': {0: 'batch_size'}
                 }
             )
             print(f"Saved best model at epoch {epoch+1} with validation loss {val_loss:.6f}")
