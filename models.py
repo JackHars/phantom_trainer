@@ -4,6 +4,36 @@ import torch.nn as nn
 # Constants
 TEMPORAL_SIZE = 512  # Temporal feature size
 
+# Define a proper ResNet BasicBlock
+class BasicBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, stride=1, downsample=None):
+        super(BasicBlock, self).__init__()
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.relu = nn.ReLU(inplace=True)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+        self.downsample = downsample
+        self.stride = stride
+        
+    def forward(self, x):
+        identity = x
+        
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+        
+        out = self.conv2(out)
+        out = self.bn2(out)
+        
+        if self.downsample is not None:
+            identity = self.downsample(x)
+            
+        out += identity
+        out = self.relu(out)
+        
+        return out
+
 class SuperComboNet(nn.Module):
     def __init__(self, temporal_size=TEMPORAL_SIZE, output_size=None):
         super(SuperComboNet, self).__init__()
@@ -45,14 +75,8 @@ class SuperComboNet(nn.Module):
         
     def _make_layer(self, in_channels, out_channels, blocks, stride=1):
         layers = []
-        # First block with downsampling
-        layers.append(self._make_block(in_channels, out_channels, stride))
-        # Remaining blocks
-        for _ in range(1, blocks):
-            layers.append(self._make_block(out_channels, out_channels, 1))
-        return nn.Sequential(*layers)
-    
-    def _make_block(self, in_channels, out_channels, stride=1):
+        
+        # First block handles downsampling
         downsample = None
         if stride != 1 or in_channels != out_channels:
             downsample = nn.Sequential(
@@ -60,17 +84,14 @@ class SuperComboNet(nn.Module):
                 nn.BatchNorm2d(out_channels)
             )
         
-        layers = []
-        layers.append(nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False))
-        layers.append(nn.BatchNorm2d(out_channels))
-        layers.append(nn.ReLU(inplace=True))
-        layers.append(nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False))
-        layers.append(nn.BatchNorm2d(out_channels))
+        # First block with potential downsample
+        layers.append(BasicBlock(in_channels, out_channels, stride, downsample))
         
-        if downsample is not None:
-            return nn.Sequential(*layers, downsample, nn.ReLU(inplace=True))
-        else:
-            return nn.Sequential(*layers, nn.ReLU(inplace=True))
+        # Remaining blocks (no stride/downsample)
+        for _ in range(1, blocks):
+            layers.append(BasicBlock(out_channels, out_channels))
+            
+        return nn.Sequential(*layers)
     
     def reset_temporal_state(self, batch_size=1):
         self.temporal_feature = torch.zeros(batch_size, 1, self.gru.hidden_size, device=next(self.parameters()).device)
@@ -84,13 +105,20 @@ class SuperComboNet(nn.Module):
         
         # Process temporal features
         if recurrent_state is not None:
-            self.temporal_feature = recurrent_state
+            current_state = recurrent_state
         elif self.temporal_feature.size(0) != batch_size:
-            self.reset_temporal_state(batch_size)
+            # Initialize new state for this batch size
+            current_state = torch.zeros(batch_size, 1, self.gru.hidden_size, 
+                                       device=next(self.parameters()).device)
+        else:
+            # Use existing state but detach it from computation graph
+            current_state = self.temporal_feature.detach()
         
         # Process recurrent component
         x_gru = x.unsqueeze(1)  # Add sequence dimension
-        gru_out, h_n = self.gru(x_gru, self.temporal_feature.transpose(0, 1).contiguous())
+        gru_out, h_n = self.gru(x_gru, current_state.transpose(0, 1).contiguous())
+        
+        # Store new state for next iteration
         self.temporal_feature = h_n.transpose(0, 1)
         
         # Feature fusion
@@ -100,10 +128,7 @@ class SuperComboNet(nn.Module):
         # Generate flat output array
         output = self.output_head(fused)
         
-        # In the main inference mode, we only return the primary output
-        if not self.training:
-            return output, self.temporal_feature
-            
+        # Return the primary output and current state
         return output, self.temporal_feature
 
 # RGB to YUV conversion

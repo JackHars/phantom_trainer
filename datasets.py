@@ -357,14 +357,23 @@ class Comma10kDataset(Dataset):
         
         # All image files in the repository
         img_paths = []
-        # Regular images
-        img_paths.extend(list(self.data_dir / 'imgs').glob('*.png'))
-        # Fisheye images
-        if (self.data_dir / 'imgs2').exists():
-            img_paths.extend(list(self.data_dir / 'imgs2').glob('*.png'))
-        # Driver camera images
-        if (self.data_dir / 'imgsd').exists():
-            img_paths.extend(list(self.data_dir / 'imgsd').glob('*.png'))
+        
+        # Regular images (road-facing)
+        imgs_path = self.data_dir / 'imgs'
+        if imgs_path.exists():
+            img_paths.extend(list(imgs_path.glob('*.png')))
+        else:
+            print(f"Warning: Image directory {imgs_path} not found")
+        
+        # Fisheye images (also road-facing)
+        imgs2_path = self.data_dir / 'imgs2'
+        if imgs2_path.exists():
+            img_paths.extend(list(imgs2_path.glob('*.png')))
+        
+        # We don't use driver camera images for the road model
+        # imgsd_path = self.data_dir / 'imgsd'
+        # if imgsd_path.exists():
+        #     img_paths.extend(list(imgsd_path.glob('*.png')))
             
         print(f"Found {len(img_paths)} total images")
         
@@ -390,12 +399,10 @@ class Comma10kDataset(Dataset):
         img_name = img_path.name
         
         # Check which images directory this is from
-        if 'imgs/' in str(img_path):
+        if 'imgs/' in str(img_path) or 'imgs\\' in str(img_path):
             mask_path = self.data_dir / 'masks' / img_name
-        elif 'imgs2/' in str(img_path):
+        elif 'imgs2/' in str(img_path) or 'imgs2\\' in str(img_path):
             mask_path = self.data_dir / 'masks2' / img_name
-        elif 'imgsd/' in str(img_path):
-            mask_path = self.data_dir / 'masksd' / img_name
         else:
             return None
             
@@ -410,20 +417,21 @@ class Comma10kDataset(Dataset):
         output = np.zeros(OUTPUT_SIZE, dtype=np.float32)
         
         # Convert mask from RGB to class indices
-        # Comma10k uses RGB colors to represent classes:
-        # 1: #402020 (64, 32, 32) - road
-        # 2: #ff0000 (255, 0, 0) - lane markings
-        # 3: #808060 (128, 128, 96) - undrivable
-        # 4: #00ff66 (0, 255, 102) - movable (vehicles and people)
-        # 5: #cc00ff (204, 0, 255) - my car
-        # 6: #00ccff (0, 204, 255) - movable in car
+        # Colors from comma10k repository:
+        # 1 - #402020 (64, 32, 32) - road (all parts, anywhere nobody would look at you funny for driving)
+        # 2 - #ff0000 (255, 0, 0) - lane markings (don't include non lane markings like turn arrows and crosswalks)
+        # 3 - #808060 (128, 128, 96) - undrivable
+        # 4 - #00ff66 (0, 255, 102) - movable (vehicles and people/animals)
+        # 5 - #cc00ff (204, 0, 255) - my car (and anything inside it, including wires, mounts, etc. No reflections)
+        # 6 - #00ccff (0, 204, 255) - movable in my car (people inside the car, imgsd only)
         
-        # Create masks for each class
+        # Create masks for each class - use exact colors from repository
         road_mask = np.all(mask == np.array([64, 32, 32]), axis=2)
         lane_mask = np.all(mask == np.array([255, 0, 0]), axis=2)
         undrivable_mask = np.all(mask == np.array([128, 128, 96]), axis=2)
         movable_mask = np.all(mask == np.array([0, 255, 102]), axis=2)
         car_mask = np.all(mask == np.array([204, 0, 255]), axis=2)
+        movable_in_car_mask = np.all(mask == np.array([0, 204, 255]), axis=2)
         
         # Process road edges using the boundary between road and non-road
         if np.any(road_mask):
@@ -658,11 +666,15 @@ class Comma10kDataset(Dataset):
         
         # Load mask
         if mask_path and mask_path.exists():
-            mask = np.array(Image.open(mask_path))
+            # Explicitly convert mask to RGB
+            mask = np.array(Image.open(mask_path).convert('RGB'))
         else:
             # Create a dummy mask if none exists
             mask = np.zeros((image.height, image.width, 3), dtype=np.uint8)
-            print(f"Warning: No mask found for {img_path}")
+            
+            # Only print warning for non-imgsd files, since many imgsd files are expected to not have masks yet
+            if 'imgsd' not in str(img_path):
+                print(f"Warning: No mask found for {img_path}")
         
         # Resize image to expected input size
         image = image.resize((MODEL_WIDTH, MODEL_HEIGHT))
