@@ -6,6 +6,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 import torchvision.transforms as transforms
 from tqdm import tqdm
+from torch.cuda.amp import GradScaler, autocast  # For mixed precision training
 
 from constants import *
 from models import SuperComboNet
@@ -16,6 +17,9 @@ def train_model(model, train_loader, val_loader, device, epochs=100, lr=1e-4):
     optimizer = optim.Adam(model.parameters(), lr=lr)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5, factor=0.5)
     
+    # Initialize gradient scaler for mixed precision training
+    scaler = GradScaler()
+    
     best_val_loss = float('inf')
     
     for epoch in range(epochs):
@@ -24,21 +28,23 @@ def train_model(model, train_loader, val_loader, device, epochs=100, lr=1e-4):
         train_loss = 0
         
         for batch in tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs} [Train]"):
-            images = batch['image'].to(device)
-            targets = batch['target'].to(device)
-            desire = batch['desire'].to(device)
-            traffic_convention = batch['traffic_convention'].to(device)
+            images = batch['image'].to(device, non_blocking=True)
+            targets = batch['target'].to(device, non_blocking=True)
+            desire = batch['desire'].to(device, non_blocking=True)
+            traffic_convention = batch['traffic_convention'].to(device, non_blocking=True)
             
-            # Forward pass
-            outputs, _ = model(images, desire, traffic_convention)
+            # Zero gradients
+            optimizer.zero_grad(set_to_none=True)  # More efficient than zero_grad()
             
-            # Calculate loss on full output array
-            loss = nn.MSELoss()(outputs, targets)
+            # Forward pass with mixed precision
+            with autocast():
+                outputs, _ = model(images, desire, traffic_convention)
+                loss = nn.MSELoss()(outputs, targets)
             
-            # Update weights
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+            # Scale loss, backward pass, optimize
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
             
             train_loss += loss.item()
         
@@ -50,19 +56,19 @@ def train_model(model, train_loader, val_loader, device, epochs=100, lr=1e-4):
         
         with torch.no_grad():
             for batch in tqdm(val_loader, desc=f"Epoch {epoch+1}/{epochs} [Val]"):
-                images = batch['image'].to(device)
-                targets = batch['target'].to(device)
-                desire = batch['desire'].to(device)
-                traffic_convention = batch['traffic_convention'].to(device)
+                images = batch['image'].to(device, non_blocking=True)
+                targets = batch['target'].to(device, non_blocking=True)
+                desire = batch['desire'].to(device, non_blocking=True)
+                traffic_convention = batch['traffic_convention'].to(device, non_blocking=True)
                 
                 # Reset temporal state for consistency
                 model.reset_temporal_state(images.size(0))
                 
-                # Forward pass
-                outputs, _ = model(images, desire, traffic_convention)
+                # Forward pass with mixed precision
+                with autocast():
+                    outputs, _ = model(images, desire, traffic_convention)
+                    loss = nn.MSELoss()(outputs, targets)
                 
-                # Calculate validation loss
-                loss = nn.MSELoss()(outputs, targets)
                 val_loss += loss.item()
         
         val_loss /= len(val_loader)
@@ -114,7 +120,7 @@ def train_model(model, train_loader, val_loader, device, epochs=100, lr=1e-4):
             print(f"Saved best model at epoch {epoch+1} with validation loss {val_loss:.6f}")
             print(f"Exported ONNX model to supercombo.onnx")
 
-def main(data_dir=None, dataset='cityscapes', batch_size=8, epochs=100, 
+def main(data_dir=None, dataset='cityscapes', batch_size=32, epochs=100, 
          learning_rate=1e-4, limit_samples=None, annotation_mode='fine'):
     """
     Main function to train the SuperCombo model.
@@ -126,7 +132,7 @@ def main(data_dir=None, dataset='cityscapes', batch_size=8, epochs=100,
         parser.add_argument('--data_dir', type=str, required=True, help='Directory containing dataset')
         parser.add_argument('--dataset', type=str, default='cityscapes', choices=['cityscapes', 'comma10k'], 
                           help='Dataset to use for training')
-        parser.add_argument('--batch_size', type=int, default=8, help='Batch size')
+        parser.add_argument('--batch_size', type=int, default=32, help='Batch size')
         parser.add_argument('--epochs', type=int, default=100, help='Number of epochs')
         parser.add_argument('--learning_rate', type=float, default=1e-4, help='Learning rate')
         parser.add_argument('--limit_samples', type=int, default=None, help='Limit number of samples (for debugging)')
@@ -146,6 +152,14 @@ def main(data_dir=None, dataset='cityscapes', batch_size=8, epochs=100,
     # Set device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
+    
+    # Optimize CUDA performance
+    if device.type == 'cuda':
+        # Set to highest priority
+        torch.backends.cudnn.benchmark = True
+        # Print CUDA information
+        print(f"CUDA Device: {torch.cuda.get_device_name(0)}")
+        print(f"CUDA Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
     
     # Define transformations
     transform = transforms.Compose([
@@ -188,9 +202,26 @@ def main(data_dir=None, dataset='cityscapes', batch_size=8, epochs=100,
     else:
         raise ValueError(f"Unknown dataset: {dataset}")
     
-    # Create data loaders
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4)
+    # Create data loaders with optimized settings for RTX 4090
+    train_loader = DataLoader(
+        train_dataset, 
+        batch_size=batch_size, 
+        shuffle=True, 
+        num_workers=8,  # Increased worker count
+        pin_memory=True,  # Uses pinned memory for faster GPU transfer
+        persistent_workers=True,  # Keep workers alive between epochs
+        prefetch_factor=3  # Prefetch multiple batches
+    )
+    
+    val_loader = DataLoader(
+        val_dataset, 
+        batch_size=batch_size, 
+        shuffle=False, 
+        num_workers=8,
+        pin_memory=True,
+        persistent_workers=True,
+        prefetch_factor=3
+    )
     
     # Create model
     model = SuperComboNet(temporal_size=TEMPORAL_SIZE, output_size=OUTPUT_SIZE)

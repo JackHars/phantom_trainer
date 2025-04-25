@@ -15,8 +15,8 @@ def main():
     train_parser.add_argument('--dataset', type=str, default='cityscapes', 
                             choices=['cityscapes', 'comma10k'], 
                             help='Dataset to use for training')
-    train_parser.add_argument('--batch_size', type=int, default=8, 
-                            help='Batch size')
+    train_parser.add_argument('--batch_size', type=int, default=32, 
+                            help='Batch size (increase for faster training on RTX 4090)')
     train_parser.add_argument('--epochs', type=int, default=100, 
                             help='Number of epochs')
     train_parser.add_argument('--learning_rate', type=float, default=1e-4, 
