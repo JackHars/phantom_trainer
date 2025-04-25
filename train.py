@@ -108,18 +108,34 @@ def train_model(model, train_loader, val_loader, device, epochs=100, lr=1e-4):
             print(f"Saved best model at epoch {epoch+1} with validation loss {val_loss:.6f}")
             print(f"Exported ONNX model to supercombo.onnx")
 
-def main():
-    parser = argparse.ArgumentParser(description='Train SuperCombo Model')
-    parser.add_argument('--data_dir', type=str, required=True, help='Directory containing dataset')
-    parser.add_argument('--dataset', type=str, default='cityscapes', choices=['cityscapes', 'comma10k'], 
-                      help='Dataset to use for training')
-    parser.add_argument('--batch_size', type=int, default=8, help='Batch size')
-    parser.add_argument('--epochs', type=int, default=100, help='Number of epochs')
-    parser.add_argument('--learning_rate', type=float, default=1e-4, help='Learning rate')
-    parser.add_argument('--limit_samples', type=int, default=None, help='Limit number of samples (for debugging)')
-    parser.add_argument('--annotation_mode', type=str, default='fine', choices=['fine', 'coarse'], 
-                      help='Annotation mode for Cityscapes dataset')
-    args = parser.parse_args()
+def main(data_dir=None, dataset='cityscapes', batch_size=8, epochs=100, 
+         learning_rate=1e-4, limit_samples=None, annotation_mode='fine'):
+    """
+    Main function to train the SuperCombo model.
+    Can be called directly or from main.py.
+    """
+    # If called directly (not from main.py), parse arguments
+    if data_dir is None:
+        parser = argparse.ArgumentParser(description='Train SuperCombo Model')
+        parser.add_argument('--data_dir', type=str, required=True, help='Directory containing dataset')
+        parser.add_argument('--dataset', type=str, default='cityscapes', choices=['cityscapes', 'comma10k'], 
+                          help='Dataset to use for training')
+        parser.add_argument('--batch_size', type=int, default=8, help='Batch size')
+        parser.add_argument('--epochs', type=int, default=100, help='Number of epochs')
+        parser.add_argument('--learning_rate', type=float, default=1e-4, help='Learning rate')
+        parser.add_argument('--limit_samples', type=int, default=None, help='Limit number of samples (for debugging)')
+        parser.add_argument('--annotation_mode', type=str, default='fine', choices=['fine', 'coarse'], 
+                          help='Annotation mode for Cityscapes dataset')
+        args = parser.parse_args()
+        
+        # Use parsed arguments
+        data_dir = args.data_dir
+        dataset = args.dataset
+        batch_size = args.batch_size
+        epochs = args.epochs
+        learning_rate = args.learning_rate
+        limit_samples = args.limit_samples
+        annotation_mode = args.annotation_mode
     
     # Set device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -131,44 +147,44 @@ def main():
     ])
     
     # Create datasets based on the chosen dataset
-    if args.dataset == 'cityscapes':
-        print(f"Using Cityscapes dataset from {args.data_dir}")
+    if dataset == 'cityscapes':
+        print(f"Using Cityscapes dataset from {data_dir}")
         train_dataset = CityscapesDataset(
-            data_dir=args.data_dir,
+            data_dir=data_dir,
             transform=transform,
             split='train',
-            mode=args.annotation_mode,
-            limit_samples=args.limit_samples
+            mode=annotation_mode,
+            limit_samples=limit_samples
         )
         
         val_dataset = CityscapesDataset(
-            data_dir=args.data_dir,
+            data_dir=data_dir,
             transform=transform,
             split='val',
-            mode=args.annotation_mode,
-            limit_samples=args.limit_samples
+            mode=annotation_mode,
+            limit_samples=limit_samples
         )
-    elif args.dataset == 'comma10k':
-        print(f"Using comma10k dataset from {args.data_dir}")
+    elif dataset == 'comma10k':
+        print(f"Using comma10k dataset from {data_dir}")
         train_dataset = Comma10kDataset(
-            data_dir=args.data_dir,
+            data_dir=data_dir,
             transform=transform,
             split='train',
-            limit_samples=args.limit_samples
+            limit_samples=limit_samples
         )
         
         val_dataset = Comma10kDataset(
-            data_dir=args.data_dir,
+            data_dir=data_dir,
             transform=transform,
             split='val',
-            limit_samples=args.limit_samples
+            limit_samples=limit_samples
         )
     else:
-        raise ValueError(f"Unknown dataset: {args.dataset}")
+        raise ValueError(f"Unknown dataset: {dataset}")
     
     # Create data loaders
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
-    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4)
     
     # Create model
     model = SuperComboNet(temporal_size=TEMPORAL_SIZE, output_size=OUTPUT_SIZE)
@@ -180,8 +196,8 @@ def main():
         train_loader=train_loader,
         val_loader=val_loader,
         device=device,
-        epochs=args.epochs,
-        lr=args.learning_rate
+        epochs=epochs,
+        lr=learning_rate
     )
 
 if __name__ == "__main__":

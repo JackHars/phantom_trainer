@@ -32,7 +32,16 @@ def main():
     
     # Run the appropriate command
     if args.command == 'train':
-        train_main()
+        # Pass all arguments to train_main
+        train_main(
+            data_dir=args.data_dir,
+            dataset=args.dataset,
+            batch_size=args.batch_size,
+            epochs=args.epochs,
+            learning_rate=args.learning_rate,
+            limit_samples=args.limit_samples,
+            annotation_mode=args.annotation_mode
+        )
     else:
         parser.print_help()
 
